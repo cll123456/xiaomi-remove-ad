@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">澎湃净广</string>
+    <string name="vpn_channel_name">广告过滤</string>
+    <string name="vpn_channel_description">本地 DNS 广告过滤运行状态</string>
+    <string name="splash_skip_description">在普通第三方应用启动后的短时间内识别并点击“跳过”；金融应用使用严格模式或完全排除。不读取输入内容，不上传界面数据。</string>
+</resources>
