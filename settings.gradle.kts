@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "HyperAdGuard"
+rootProject.name = "JingQi"
 include(":app")

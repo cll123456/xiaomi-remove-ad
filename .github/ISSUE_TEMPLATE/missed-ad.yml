@@ -1,0 +1,70 @@
+name: 漏网广告反馈
+description: 反馈仍然出现的开屏、弹窗、信息流或通知广告
+title: "[漏网广告] "
+labels:
+  - rule-request
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请勿上传包含姓名、账号、余额、手机号、银行卡、短信或支付信息的截图。金融类应用默认只接受文字说明。
+  - type: input
+    id: app_name
+    attributes:
+      label: 应用名称
+      placeholder: 例如：携程旅行
+    validations:
+      required: true
+  - type: input
+    id: package_name
+    attributes:
+      label: 包名（如果知道）
+      placeholder: 例如：ctrip.android.view
+  - type: input
+    id: app_version
+    attributes:
+      label: 应用版本
+      placeholder: 例如：8.95.2
+    validations:
+      required: true
+  - type: dropdown
+    id: ad_type
+    attributes:
+      label: 广告类型
+      options:
+        - 开屏广告
+        - 弹窗广告
+        - 信息流广告
+        - 通知推广
+        - 系统推荐
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 从打开应用开始描述，说明广告是否每次出现、跳过按钮大致位置和等待时间。
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: 设备与系统
+      placeholder: 例如：Redmi K90 Pro Max / 澎湃 OS 3
+    validations:
+      required: true
+  - type: input
+    id: jingqi_version
+    attributes:
+      label: 净启版本
+      placeholder: 例如：0.8.0 (11)
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已确认本反馈不包含账号、余额、真实姓名、手机号、银行卡、短信或支付信息。
+          required: true

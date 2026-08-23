@@ -6,4 +6,4 @@
     android:canRetrieveWindowContent="true"
     android:description="@string/splash_skip_description"
     android:notificationTimeout="80"
-    android:settingsActivity="dev.hyperadguard.MainActivity" />
+    android:settingsActivity="app.jingqi.guard.MainActivity" />
