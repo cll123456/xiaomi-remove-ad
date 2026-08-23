@@ -14,3 +14,8 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 The names "净启" and "JingQi Guard", official visual assets, official domains,
 and official APK signing identities are not licensed for impersonation. See
 TRADEMARKS.md.
+
+This distribution includes third-party open-source software, including Kadb,
+SPAKE2 Java, Conscrypt, Bouncy Castle, Okio, Kotlin and AndroidX. Copyright and
+license details are listed in THIRD_PARTY_NOTICES.md and bundled under
+app/src/main/assets/licenses/.

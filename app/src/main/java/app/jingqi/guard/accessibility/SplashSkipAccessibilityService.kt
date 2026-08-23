@@ -2,24 +2,20 @@ package app.jingqi.guard.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
-import android.content.ComponentName
-import android.content.ServiceConnection
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.Handler
-import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import app.jingqi.guard.rules.BuiltInRuleCatalog
 import app.jingqi.guard.rules.NodePolicy
 import app.jingqi.guard.rules.VisualSplashRule
-import app.jingqi.guard.system.IPrivilegedService
-import app.jingqi.guard.system.PrivilegedService
-import rikka.shizuku.Shizuku
 import java.util.ArrayDeque
 import java.util.concurrent.Executors
 
@@ -30,27 +26,6 @@ class SplashSkipAccessibilityService : AccessibilityService() {
     private var canvasHandledForEntry = false
     private val handler = Handler(Looper.getMainLooper())
     private val screenshotExecutor = Executors.newSingleThreadExecutor()
-    private var privilegedService: IPrivilegedService? = null
-    private var shizukuBinding = false
-    private val shizukuArgs by lazy {
-        Shizuku.UserServiceArgs(ComponentName(packageName, PrivilegedService::class.java.name))
-            .daemon(false).processNameSuffix("governance").debuggable(false).version(10)
-    }
-    private val shizukuConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName, binder: IBinder) {
-            privilegedService = IPrivilegedService.Stub.asInterface(binder)
-            shizukuBinding = false
-        }
-
-        override fun onServiceDisconnected(name: ComponentName) {
-            privilegedService = null
-            shizukuBinding = false
-        }
-    }
-    private val shizukuReceived = Shizuku.OnBinderReceivedListener { bindShizukuIfAvailable() }
-    private val shizukuPermissionResult = Shizuku.OnRequestPermissionResultListener { _, result ->
-        if (result == PackageManager.PERMISSION_GRANTED) bindShizukuIfAvailable()
-    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -59,9 +34,6 @@ class SplashSkipAccessibilityService : AccessibilityService() {
             .remove("debug_event_package")
             .remove("debug_canvas")
             .apply()
-        Shizuku.addBinderReceivedListenerSticky(shizukuReceived)
-        Shizuku.addRequestPermissionResultListener(shizukuPermissionResult)
-        bindShizukuIfAvailable()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -93,22 +65,8 @@ class SplashSkipAccessibilityService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
-        Shizuku.removeBinderReceivedListener(shizukuReceived)
-        Shizuku.removeRequestPermissionResultListener(shizukuPermissionResult)
-        runCatching { Shizuku.unbindUserService(shizukuArgs, shizukuConnection, false) }
         screenshotExecutor.shutdownNow()
         super.onDestroy()
-    }
-
-    private fun bindShizukuIfAvailable() {
-        if (privilegedService != null || shizukuBinding) return
-        val ready = runCatching {
-            Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-        }.getOrDefault(false)
-        if (!ready) return
-        shizukuBinding = true
-        runCatching { Shizuku.bindUserService(shizukuArgs, shizukuConnection) }
-            .onFailure { shizukuBinding = false }
     }
 
     private fun scheduleCanvasSplashChecks(packageName: String) {
@@ -123,31 +81,45 @@ class SplashSkipAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Ctrip and iQIYI draw their splash close button into a video/canvas layer.
-     * The shell process captures and evaluates a fixed, built-in region itself.
-     * Only a boolean match result crosses Binder; no screen image is returned,
-     * written to storage, or uploaded.
+     * Ctrip and iQIYI draw the close control into a video/canvas layer. Android's
+     * accessibility screenshot API evaluates a fixed region here in memory; the
+     * image is never written, returned to the app UI, or uploaded.
      */
     private fun inspectCanvasSplash(packageName: String, config: VisualSplashRule) {
-        val privileged = privilegedService ?: run {
-            bindShizukuIfAvailable()
-            handler.postDelayed({
-                if (activePackage == packageName && !canvasHandledForEntry &&
-                    SystemClock.elapsedRealtime() - packageEnteredAt <= config.activeWindowMillis
-                ) {
-                    inspectCanvasSplash(packageName, config)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        takeScreenshot(
+            Display.DEFAULT_DISPLAY,
+            screenshotExecutor,
+            object : TakeScreenshotCallback {
+                override fun onSuccess(screenshot: ScreenshotResult) {
+                    val bitmap = runCatching {
+                        val buffer = screenshot.hardwareBuffer
+                        try {
+                            val hardwareBitmap = Bitmap.wrapHardwareBuffer(buffer, screenshot.colorSpace)
+                            try {
+                                hardwareBitmap?.copy(Bitmap.Config.ARGB_8888, false)
+                            } finally {
+                                hardwareBitmap?.recycle()
+                            }
+                        } finally {
+                            buffer.close()
+                        }
+                    }.getOrNull() ?: return
+                    val matched = try {
+                        SplashImageMatcher.matches(config.profileId, bitmap)
+                    } finally {
+                        bitmap.recycle()
+                    }
+                    if (matched) handler.post {
+                        if (activePackage == packageName && !canvasHandledForEntry) {
+                            tapCanvasSkip(packageName, config)
+                        }
+                    }
                 }
-            }, CANVAS_BIND_RETRY_MS)
-            return
-        }
-        screenshotExecutor.execute {
-            val matched = runCatching {
-                privileged.matchesKnownSplashProfile(config.profileId)
-            }.getOrDefault(false)
-            if (matched) handler.post {
-                if (activePackage == packageName && !canvasHandledForEntry) tapCanvasSkip(packageName, config)
+
+                override fun onFailure(errorCode: Int) = Unit
             }
-        }
+        )
     }
 
     private fun tapCanvasSkip(packageName: String, config: VisualSplashRule) {
@@ -257,7 +229,6 @@ class SplashSkipAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val STARTUP_WINDOW_MS = 15_000L
-        private const val CANVAS_BIND_RETRY_MS = 350L
         private val SENSITIVE_HINTS = listOf(
             "bank", "mbank", "wallet", "alipay", "unionpay", "payment", "finance",
             "securities", "broker", "authenticator", "password", "keychain"
@@ -265,5 +236,55 @@ class SplashSkipAccessibilityService : AccessibilityService() {
         private val SENSITIVE_LABELS = listOf("银行", "支付", "证券", "钱包", "金融", "保险")
         private val SKIP_PATTERN = Regex("^跳过(?:广告)?(?:\\s*[0-9]+\\s*(?:秒|s)?)?.*$", RegexOption.IGNORE_CASE)
         private val STRICT_SKIP_PATTERN = Regex("^跳过(?:广告)?(?:\\s*[0-9]+\\s*(?:秒|s)?)?$", RegexOption.IGNORE_CASE)
+    }
+}
+
+private object SplashImageMatcher {
+    private data class Profile(
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+        val whiteRange: ClosedFloatingPointRange<Float>
+    )
+
+    fun matches(profileId: Int, bitmap: Bitmap): Boolean {
+        val profile = when (profileId) {
+            app.jingqi.guard.system.PrivilegedContract.SPLASH_CTRIP -> Profile(
+                left = 0.735f,
+                top = 0.068f,
+                right = 0.970f,
+                bottom = 0.110f,
+                whiteRange = 0.025f..0.100f
+            )
+            app.jingqi.guard.system.PrivilegedContract.SPLASH_IQIYI -> Profile(
+                left = 0.800f,
+                top = 0.030f,
+                right = 0.900f,
+                bottom = 0.058f,
+                whiteRange = 0.040f..0.110f
+            )
+            else -> return false
+        }
+        if (bitmap.width < 2 || bitmap.height < 2) return false
+        val x0 = (bitmap.width * profile.left).toInt().coerceIn(0, bitmap.width - 1)
+        val y0 = (bitmap.height * profile.top).toInt().coerceIn(0, bitmap.height - 1)
+        val x1 = (bitmap.width * profile.right).toInt().coerceIn(x0 + 1, bitmap.width)
+        val y1 = (bitmap.height * profile.bottom).toInt().coerceIn(y0 + 1, bitmap.height)
+        var total = 0
+        var white = 0
+        for (y in y0 until y1) {
+            for (x in x0 until x1) {
+                val color = bitmap.getPixel(x, y)
+                val red = android.graphics.Color.red(color)
+                val green = android.graphics.Color.green(color)
+                val blue = android.graphics.Color.blue(color)
+                val maximum = maxOf(red, green, blue)
+                val minimum = minOf(red, green, blue)
+                total++
+                if (minimum > 180 && maximum - minimum < 70) white++
+            }
+        }
+        return total > 0 && white.toFloat() / total in profile.whiteRange
     }
 }

@@ -12,15 +12,18 @@ android {
         applicationId = "app.jingqi.guard"
         minSdk = 28
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.8.0"
+        versionCode = 12
+        versionName = "0.9.0"
+
+        // The current website/internal build targets modern Xiaomi devices.
+        // Add per-ABI website artifacts before widening public device support.
+        ndk { abiFilters += "arm64-v8a" }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
         compose = true
-        aidl = true
         buildConfig = true
     }
 
@@ -30,7 +33,33 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 
-    packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    buildTypes {
+        debug {
+            buildConfigField("boolean", "EXPERT_PREVIEW", "true")
+        }
+        release {
+            buildConfigField("boolean", "EXPERT_PREVIEW", "false")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+        create("preview") {
+            initWith(getByName("release"))
+            buildConfigField("boolean", "EXPERT_PREVIEW", "true")
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+        }
+    }
+
+    lint { lintConfig = file("lint.xml") }
+
+    packaging.resources.excludes += setOf(
+        "/META-INF/{AL2.0,LGPL2.1}",
+        "/META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+    )
 }
 
 dependencies {
@@ -44,8 +73,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
-    implementation("dev.rikka.shizuku:api:13.1.5")
-    implementation("dev.rikka.shizuku:provider:13.1.5")
+    implementation("com.flyfishxu:kadb:1.2.1") {
+        exclude(group = "org.lsposed.hiddenapibypass", module = "hiddenapibypass")
+    }
+    implementation("org.conscrypt:conscrypt-android:2.5.3")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")

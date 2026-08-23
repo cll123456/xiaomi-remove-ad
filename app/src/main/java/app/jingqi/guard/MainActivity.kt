@@ -85,6 +85,7 @@ import app.jingqi.guard.rules.BuiltInRuleCatalog
 import app.jingqi.guard.rules.NodePolicy
 import app.jingqi.guard.system.GovernanceState
 import app.jingqi.guard.system.HyperOsGovernance
+import app.jingqi.guard.system.adb.AdbPairingService
 import app.jingqi.guard.vpn.DnsVpnService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -141,8 +142,6 @@ class MainActivity : ComponentActivity() {
     )
 
     fun openAccessibilitySettings() = openSettings(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-
-    fun openDeveloperSettings() = openSettings(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
 
     fun openNotificationSettings() = openSettings(
         Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
@@ -202,13 +201,13 @@ private fun JingQiRoot() {
     val permissionRevision by activity.permissionRevision.collectAsState()
     var tab by remember { mutableIntStateOf(0) }
     var oneTapResult by remember { mutableStateOf<String?>(null) }
+    var pairAfterNotificationPermission by remember { mutableStateOf(false) }
     val permissions = remember(permissionRevision, running) { activity.permissionSnapshot() }
 
     fun runAuthorizedProtection() {
         activity.startGuard()
         val expertStarted = if (entitlement.isExpert && governanceState.phase in setOf(
                 GovernanceState.Phase.READY,
-                GovernanceState.Phase.PERMISSION,
                 GovernanceState.Phase.DONE,
                 GovernanceState.Phase.ERROR
             )
@@ -222,7 +221,7 @@ private fun JingQiRoot() {
             append("本地广告过滤已启动。")
             if (!permissions.accessibilityEnabled) append("开屏守护还需在“权限”中由你手动开启。")
             if (entitlement.isExpert) {
-                append(if (expertStarted) "专家系统治理正在执行。" else "专家桥接尚未连接，可在“专家”页继续。")
+                append(if (expertStarted) "专家系统治理正在执行。" else "专家权限尚未连接，可在“专家”页完成一次配对。")
             }
         }
     }
@@ -231,8 +230,32 @@ private fun JingQiRoot() {
         if (it.resultCode == Activity.RESULT_OK) runAuthorizedProtection()
         else oneTapResult = "没有获得 VPN 连接许可，本地广告过滤未启动。"
     }
-    val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+    val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         activity.refreshPermissionState()
+        if (pairAfterNotificationPermission) {
+            pairAfterNotificationPermission = false
+            if (granted) activity.governance.startPairing()
+            else oneTapResult = "无线配对需要通知输入框；通知权限被拒绝，本次没有开始配对。"
+        }
+    }
+
+    fun requestPairing() {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(
+                activity,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pairAfterNotificationPermission = true
+            notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else if (!NotificationManagerCompat.from(activity).areNotificationsEnabled() ||
+            AdbPairingService.isNotificationChannelBlocked(activity)
+        ) {
+            oneTapResult = "配对通知已被系统关闭，请允许净启通知后返回专家页重试。"
+            tab = 2
+            activity.openNotificationSettings()
+        } else {
+            activity.governance.startPairing()
+        }
     }
 
     fun requestProtection(enable: Boolean) {
@@ -287,7 +310,7 @@ private fun JingQiRoot() {
                         onOpenPermissions = { tab = 2 },
                         onOpenExpert = { tab = 1 }
                     )
-                    1 -> SystemGovernance(entitlement, activity.governance)
+                    1 -> SystemGovernance(entitlement, activity.governance, ::requestPairing)
                     2 -> PermissionCenter(
                         running = running,
                         entitlement = entitlement,
@@ -303,7 +326,7 @@ private fun JingQiRoot() {
                             ) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
                             else activity.openNotificationSettings()
                         },
-                        onDeveloperSettings = activity::openDeveloperSettings,
+                        onPairing = ::requestPairing,
                         onOpenExpert = { tab = 1 }
                     )
                     else -> RulesScreen(
@@ -477,9 +500,17 @@ private fun StatusCard(
 }
 
 @Composable
-private fun SystemGovernance(entitlement: EntitlementState, governance: HyperOsGovernance) {
+private fun SystemGovernance(
+    entitlement: EntitlementState,
+    governance: HyperOsGovernance,
+    onPairing: () -> Unit
+) {
     val state by governance.state.collectAsState()
-    val busy = state.phase == GovernanceState.Phase.WORKING || state.phase == GovernanceState.Phase.CHECKING
+    val busy = state.phase in setOf(
+        GovernanceState.Phase.WORKING,
+        GovernanceState.Phase.CHECKING,
+        GovernanceState.Phase.PAIRING
+    )
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (!entitlement.isExpert) {
             item {
@@ -510,11 +541,11 @@ private fun SystemGovernance(entitlement: EntitlementState, governance: HyperOsG
                     Spacer(Modifier.height(16.dp))
                     Button(
                         onClick = {
-                            if (state.phase in setOf(
-                                    GovernanceState.Phase.SHIZUKU_MISSING,
-                                    GovernanceState.Phase.SHIZUKU_STOPPED
-                                )
-                            ) governance.openExpertBridge() else governance.apply()
+                            when (state.phase) {
+                                GovernanceState.Phase.NOT_PAIRED -> onPairing()
+                                GovernanceState.Phase.DISCONNECTED -> governance.openWirelessDebugging()
+                                else -> governance.apply()
+                            }
                         },
                         enabled = !busy,
                         modifier = Modifier.fillMaxWidth()
@@ -525,10 +556,11 @@ private fun SystemGovernance(entitlement: EntitlementState, governance: HyperOsG
                         }
                         Text(
                             when (state.phase) {
-                                GovernanceState.Phase.SHIZUKU_MISSING -> "安装内测桥接组件"
-                                GovernanceState.Phase.SHIZUKU_STOPPED -> "打开内测桥接组件"
-                                GovernanceState.Phase.PERMISSION -> "授权并开始治理"
-                                GovernanceState.Phase.WORKING, GovernanceState.Phase.CHECKING -> "正在治理…"
+                                GovernanceState.Phase.NOT_PAIRED -> "开始一次本机配对"
+                                GovernanceState.Phase.PAIRING -> "配对进行中…"
+                                GovernanceState.Phase.DISCONNECTED -> "打开无线调试"
+                                GovernanceState.Phase.WORKING -> "正在治理…"
+                                GovernanceState.Phase.CHECKING -> "正在检查连接…"
                                 else -> "一键关闭系统广告"
                             }
                         )
@@ -545,13 +577,19 @@ private fun SystemGovernance(entitlement: EntitlementState, governance: HyperOsG
                             Text("恢复治理前的系统设置")
                         }
                     }
+                    if (state.phase == GovernanceState.Phase.DISCONNECTED) {
+                        Spacer(Modifier.height(8.dp))
+                        TextButton(onClick = onPairing, modifier = Modifier.fillMaxWidth()) {
+                            Text("系统忘记了净启？重新配对")
+                        }
+                    }
                 }
             }
         }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF8E1))) {
                 Text(
-                    "0.8 内测版暂时使用 Shizuku 启动受限服务；正式专家版将换成净启内置无线调试配对，不再要求安装第二个应用。",
+                    "首次配对：点上方按钮 → 在开发者选项进入“无线调试” → 点“使用配对码配对设备” → 保持六位码窗口打开，下拉通知栏，在净启通知中输入配对码。成功后不需要安装 Shizuku。",
                     Modifier.padding(16.dp),
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -572,6 +610,8 @@ private fun SystemGovernance(entitlement: EntitlementState, governance: HyperOsG
                     Text("• 只修改四个预先登记的澎湃 OS 推荐设置。")
                     Text("• 不再通过特权命令偷偷开启无障碍服务。")
                     Text("• 不接受服务器、规则或用户输入的 Shell 命令。")
+                    Text("• 配对端口必须属于本机网络接口，不会连接附近其他设备。")
+                    Text("• 配对私钥由 Android Keystore 加密并排除云备份。")
                     Text("• 执行前保存原值，所有成功项目均回读验证。")
                     Text("• 可以恢复到第一次治理前的状态。")
                 }
@@ -589,7 +629,7 @@ private fun PermissionCenter(
     onToggleVpn: (Boolean) -> Unit,
     onAccessibility: () -> Unit,
     onNotifications: () -> Unit,
-    onDeveloperSettings: () -> Unit,
+    onPairing: () -> Unit,
     onOpenExpert: () -> Unit
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -643,7 +683,7 @@ private fun PermissionCenter(
                     governanceState.phase in setOf(GovernanceState.Phase.READY, GovernanceState.Phase.DONE) -> "已连接"
                     else -> "尚未连接"
                 },
-                explanation = "用于固定的系统广告治理和局部视觉匹配；不允许任意命令。",
+                explanation = "用于固定的系统广告治理；不允许规则、服务器或界面输入任意命令。",
                 ready = !entitlement.isExpert || governanceState.phase in setOf(
                     GovernanceState.Phase.READY,
                     GovernanceState.Phase.DONE
@@ -655,12 +695,16 @@ private fun PermissionCenter(
         if (entitlement.isExpert) item {
             PermissionCard(
                 icon = Icons.Outlined.Settings,
-                title = "无线调试（正式版路径）",
-                status = "内置配对开发中",
-                explanation = "首次必须由用户开启并输入六位配对码；配对后日常治理可以一键执行。",
-                ready = false,
-                action = "查看开发者选项",
-                onAction = onDeveloperSettings
+                title = "内置无线调试配对",
+                status = when {
+                    governanceState.phase in setOf(GovernanceState.Phase.READY, GovernanceState.Phase.DONE) -> "已配对并连接"
+                    governanceState.phase == GovernanceState.Phase.PAIRING -> "正在配对"
+                    else -> "需要一次用户确认"
+                },
+                explanation = "首次由你开启无线调试并输入系统显示的六位码；配对后日常治理可以一键执行，不需要 Shizuku。",
+                ready = governanceState.phase in setOf(GovernanceState.Phase.READY, GovernanceState.Phase.DONE),
+                action = "开始/重新配对",
+                onAction = onPairing
             )
         }
         item {

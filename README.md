@@ -8,13 +8,14 @@
 
 ## 当前版本
 
-- 应用版本：`0.8.0`（versionCode 11）
+- 应用版本：`0.9.0`（versionCode 12）
 - 正式包名：`app.jingqi.guard`
 - 最低 Android：Android 9（API 28）
 - 编译 SDK：Android 15 / API 35
 - 重点实机：Redmi K90 Pro Max / 小米澎湃 OS 3
+- 当前测试 APK ABI：`arm64-v8a`（覆盖现代 Redmi/小米设备）
 
-`0.8.x` 是产品地基内测版本。专家能力暂时通过 Shizuku 启动受限的 Shell 身份服务；规划中的正式专家版将集成无线调试配对，不再要求用户安装第二个应用。此项尚未完成，项目不会把规划中的功能描述成当前已有能力。
+`0.9.x` 已内置 Android 11+ 无线调试配对，不再要求用户安装 Shizuku。首次使用专家治理时，用户必须在 Android 开发者选项中主动开启无线调试、打开六位配对码窗口，并从净启的配对通知输入该码。Android 不允许普通应用静默完成这些系统授权步骤。
 
 ## 免费版
 
@@ -31,7 +32,7 @@
 
 ## 专家版
 
-Debug 构建默认显示“专家内测”，便于开源贡献者和测试设备验证功能。Release 构建在签名授权服务完成前保持免费版状态，不包含隐藏的本地解锁开关。
+Debug 和 `preview` 构建默认显示“专家内测”，便于开源贡献者和测试设备验证功能。`preview` 使用调试证书签名但按 Release 方式裁剪，适合当前实机内测。Release 构建在签名授权服务完成前保持免费版状态，不包含隐藏的本地解锁开关。
 
 专家能力包括：
 
@@ -40,7 +41,19 @@ Debug 构建默认显示“专家内测”，便于开源贡献者和测试设�
 - 浏览器推荐、系统预下载、预下载任务和米享广告设置治理；
 - 治理前快照和逐项恢复；
 - 携程、爱奇艺等 Canvas/视频开屏的局部视觉规则；
-- 规划中的内置无线调试配对和签名规则更新。
+- 内置无线调试六位码配对和重连；
+- 规划中的签名规则更新。
+
+### 首次专家配对
+
+1. 允许净启显示通知；通知仅用于配对输入、VPN 状态和定期复查，不用于营销；
+2. 在专家页点“开始一次本机配对”；
+3. 在系统开发者选项进入“无线调试”；
+4. 点“使用配对码配对设备”，保持六位码窗口打开；
+5. 下拉通知栏，在净启通知中点“输入配对码”并提交六位数字；
+6. 配对和治理完成后可以关闭无线调试。
+
+配对使用 Android 11+ 的 ADB TLS/SPAKE2 协议。净启只接受由本机网络接口发布的 ADB mDNS 端点；配对私钥由 Android Keystore 加密，并存放在禁止系统备份的应用私有目录中。卸载净启会删除该私钥，之后需要重新配对。
 
 ## 一键净化
 
@@ -56,11 +69,11 @@ Android 不允许普通应用静默开启无障碍、开发者模式或无线调
 
 ## 安全边界
 
-- 特权 AIDL 不提供 `execute(command)` 或等价的任意命令入口；
-- 特权服务只能处理固定包、固定设置和固定视觉模板 ID；
+- 内置 ADB 层不接受 UI、规则、反馈或网络提供的 Shell 文本，只接受编译进 APK 的类型化操作；
+- 系统治理只能处理固定包和固定设置 ID，值必须通过白名单校验；
 - 服务端规则不能包含 Shell、DEX、SO 或其他可执行代码；
-- 携程和爱奇艺的视觉匹配在 Shell 进程内完成，只返回布尔结果；
-- 屏幕图像不跨 Binder、不写入文件、不上传网络；
+- 携程和爱奇艺的视觉匹配使用 Android 官方无障碍截图 API，并在无障碍服务进程内完成；
+- 屏幕图像只在内存短暂存在，不跨进程、不写入文件、不上传网络；
 - 净启不通过特权命令启用自己的无障碍服务；
 - 金融、支付、证券、钱包和保险应用使用严格规则或完全排除；
 - 不安装根证书，不进行 HTTPS 中间人解密；
@@ -86,16 +99,16 @@ Android 不允许普通应用静默开启无障碍、开发者模式或无线调
 
 ```powershell
 $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
-.\gradlew.bat testDebugUnitTest assembleDebug
+.\gradlew.bat lintDebug testDebugUnitTest assemblePreview assembleRelease
 ```
 
-生成的 Debug APK：
+生成的专家内测 APK：
 
 ```text
-app/build/outputs/apk/debug/app-debug.apk
+app/build/outputs/apk/preview/app-preview.apk
 ```
 
-Debug APK 使用 Android 默认调试签名，仅用于开发测试。面向网站发布前必须建立独立的长期 Release 签名，并确保私钥不进入 Git 仓库。
+Preview APK 使用 Android 默认调试签名，仅用于开发测试。面向网站发布前必须建立独立的长期 Release 签名，并确保私钥不进入 Git 仓库。
 
 ## 项目结构
 
@@ -104,7 +117,7 @@ app/src/main/java/app/jingqi/guard/
 ├── accessibility/  # 开屏守护与金融安全策略
 ├── data/           # 本地状态和免费/专家权益状态
 ├── rules/          # 声明式应用规则模型
-├── system/         # 白名单专家治理接口
+├── system/         # 白名单专家治理与内置 ADB 配对
 ├── vpn/            # 本地 DNS/VPN 过滤
 ├── work/           # 定期复查提醒
 └── MainActivity.kt # 一键净化、权限中心和产品界面

@@ -18,14 +18,14 @@ data class EntitlementState(
 
 /**
  * Release builds remain free until the signed entitlement service is added.
- * Debug builds expose expert features so the open-source project can test them
- * without embedding a secret switch or a fake production licence.
+ * Debug and signed preview builds expose expert features so the open-source
+ * project can test them without embedding a secret production switch.
  */
 object Entitlements {
     private val _state = MutableStateFlow(initialState())
     val state: StateFlow<EntitlementState> = _state.asStateFlow()
 
-    private fun initialState(): EntitlementState = if (BuildConfig.DEBUG) {
+    private fun initialState(): EntitlementState = if (BuildConfig.EXPERT_PREVIEW) {
         EntitlementState(
             tier = ProductTier.EXPERT,
             label = "专家内测",

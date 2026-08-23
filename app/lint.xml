@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!--
+      ADB wireless pairing starts with an unauthenticated TLS certificate and
+      authenticates the peer through SPAKE2 bound to TLS exported key material.
+      These findings are inside audited third-party pairing code, not app HTTP.
+      Keep the rule enabled for every class outside those two dependencies.
+    -->
+    <issue id="TrustAllX509TrustManager">
+        <ignore regexp=".*(?:bcpkix-jdk18on|kadb-(?:debug|release)).*" />
+    </issue>
+    <!-- The 0.9 website/internal artifact intentionally targets ARM64 Xiaomi phones. -->
+    <issue id="ChromeOsAbiSupport" severity="ignore" />
+</lint>
