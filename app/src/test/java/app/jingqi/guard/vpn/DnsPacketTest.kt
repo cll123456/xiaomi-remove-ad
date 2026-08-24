@@ -30,6 +30,17 @@ class DnsPacketTest {
     }
 
     @Test
+    fun createsServfailInsteadOfDroppingFailedQueries() {
+        val packet = queryPacket("api.example.com")
+        val response = DnsPacket.servfail(packet, packet.size)
+
+        assertNotNull(response)
+        val dnsOffset = 28
+        assertEquals(0x80, response!![dnsOffset + 2].toInt() and 0x80)
+        assertEquals(2, response[dnsOffset + 3].toInt() and 0x0f)
+    }
+
+    @Test
     fun ignoresNonDnsTraffic() {
         val packet = queryPacket("example.com")
         packet[22] = 0

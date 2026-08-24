@@ -23,6 +23,7 @@ object AppState {
 
     fun initialize(context: Context) {
         appContext = context.applicationContext
+        migrateCompatibilityPolicy()
         val saved = prefs.getLong("blocked_count", 0L)
         counter.set(saved)
         _blockedCount.value = saved
@@ -61,10 +62,21 @@ object AppState {
         prefs.edit().putStringSet("custom_rules", rules).apply()
     }
 
-    fun bypassPackages(): Set<String> = prefs.getStringSet("bypass_packages", emptySet()) ?: emptySet()
+    fun bypassPackages(): Set<String> = CompatibilityPolicy.effectiveBypassPackages(
+        prefs.getStringSet("bypass_packages", null)
+    )
 
     fun saveBypassPackages(packages: Set<String>) {
-        prefs.edit().putStringSet("bypass_packages", packages).apply()
+        prefs.edit().putStringSet("bypass_packages", packages.toSet()).apply()
+    }
+
+    private fun migrateCompatibilityPolicy() {
+        if (prefs.getInt("compatibility_policy_version", 0) >= COMPATIBILITY_POLICY_VERSION) return
+        val existing = prefs.getStringSet("bypass_packages", null)?.toSet().orEmpty()
+        prefs.edit()
+            .putStringSet("bypass_packages", existing + CompatibilityPolicy.defaultBypassPackages)
+            .putInt("compatibility_policy_version", COMPATIBILITY_POLICY_VERSION)
+            .apply()
     }
 
     fun taskDone(id: String): Boolean = prefs.getBoolean("task_$id", false)
@@ -72,4 +84,6 @@ object AppState {
     fun setTaskDone(id: String, done: Boolean) {
         prefs.edit().putBoolean("task_$id", done).apply()
     }
+
+    private const val COMPATIBILITY_POLICY_VERSION = 1
 }

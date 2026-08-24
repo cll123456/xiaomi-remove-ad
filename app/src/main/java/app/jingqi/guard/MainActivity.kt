@@ -878,7 +878,10 @@ private fun BypassDialog(context: Context, running: Boolean, onDismiss: () -> Un
         title = { Text("应用 VPN 白名单") },
         text = {
             Column {
-                Text("选中的应用会完全绕过净启 VPN。适合登录、支付或联网异常的应用。", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "选中的应用会完全绕过净启 VPN。微信、京东和金融支付应用默认受兼容保护，避免小程序、商品、登录或支付异常。",
+                    style = MaterialTheme.typography.bodySmall
+                )
                 Spacer(Modifier.height(8.dp))
                 LazyColumn(Modifier.height(360.dp)) {
                     items(apps, key = LaunchableApp::packageName) { app ->

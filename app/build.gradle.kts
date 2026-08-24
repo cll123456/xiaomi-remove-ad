@@ -12,8 +12,8 @@ android {
         applicationId = "app.jingqi.guard"
         minSdk = 28
         targetSdk = 35
-        versionCode = 12
-        versionName = "0.9.0"
+        versionCode = 13
+        versionName = "0.9.1"
 
         // The current website/internal build targets modern Xiaomi devices.
         // Add per-ABI website artifacts before widening public device support.

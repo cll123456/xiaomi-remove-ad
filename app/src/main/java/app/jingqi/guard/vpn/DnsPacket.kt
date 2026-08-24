@@ -30,10 +30,18 @@ object DnsPacket {
     }
 
     fun nxdomain(query: ByteArray, queryLength: Int): ByteArray? {
+        return errorResponse(query, queryLength, 3)
+    }
+
+    fun servfail(query: ByteArray, queryLength: Int): ByteArray? {
+        return errorResponse(query, queryLength, 2)
+    }
+
+    private fun errorResponse(query: ByteArray, queryLength: Int, responseCode: Int): ByteArray? {
         val parsed = parseQuery(query, queryLength) ?: return null
         val dns = parsed.dnsPayload.copyOf()
         dns[2] = (dns[2].toInt() or 0x80).toByte()
-        dns[3] = ((dns[3].toInt() and 0xf0) or 0x03).toByte()
+        dns[3] = ((dns[3].toInt() and 0xf0) or responseCode).toByte()
         for (i in 6..11) dns[i] = 0
         return responsePacket(query, queryLength, dns)
     }

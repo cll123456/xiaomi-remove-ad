@@ -5,8 +5,6 @@
 *.google-analytics.com
 *.adservice.google.com
 *.app-measurement.com
-*.adjust.com
-*.appsflyer.com
 *.unityads.unity3d.com
 *.ads.mopub.com
 *.applovin.com
@@ -15,8 +13,6 @@
 *.ironsrc.com
 *.pangolin-sdk-toutiao.com
 *.pglstatp-toutiao.com
-*.umeng.com
-*.umengcloud.com
 *.ad.xiaomi.com
 *.tracking.miui.com
 *.data.mistat.xiaomi.com
@@ -54,11 +50,6 @@ gdfp.gifshow.com
 api-access.pangolin-sdk-toutiao1.com
 toblog.ctobsnssdk.com
 g.cn.miaozhen.com
-app.duxiaoman.com
-app.duxiaomanfintech.com
-www.dxmpay.com
-datasink.dxmpay.com
-bi-sensors.duxiaoman.com
-mbd.baidu.com
-als.baidu.com
-sp0.baidu.com
+
+# Compatibility rule: do not add analytics, account, payment, generic API, or
+# shared CDN hosts here. A hostname must be dedicated to ad delivery.
