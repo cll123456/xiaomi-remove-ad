@@ -21,8 +21,14 @@ data class VisualSplashRule(
     val tapX: Float,
     val tapY: Float,
     val startupDelayMillis: Long = 1_050L,
-    val activeWindowMillis: Long = 3_000L
-)
+    val activeWindowMillis: Long = 3_000L,
+    val retryIntervalMillis: Long = 450L,
+    val maxAttempts: Int = 5,
+    val activityClassNames: Set<String> = emptySet()
+) {
+    fun supportsActivity(className: String): Boolean =
+        activityClassNames.isEmpty() || className in activityClassNames
+}
 
 data class AppRule(
     val id: String,
@@ -32,6 +38,7 @@ data class AppRule(
     val minimumVersionCode: Long? = null,
     val maximumVersionCode: Long? = null,
     val visualSplash: VisualSplashRule? = null,
+    val verifiedSkipViewIds: Set<String> = emptySet(),
     val sensitive: Boolean = false
 ) {
     init {
@@ -42,7 +49,17 @@ data class AppRule(
             require(it.tapX in 0f..1f && it.tapY in 0f..1f)
             require(it.startupDelayMillis in 0L..10_000L)
             require(it.activeWindowMillis in 250L..20_000L)
+            require(it.retryIntervalMillis in 350L..5_000L)
+            require(it.maxAttempts in 1..20)
+            require(it.startupDelayMillis + (it.maxAttempts - 1) * it.retryIntervalMillis <= it.activeWindowMillis)
+            require(it.activityClassNames.all { className ->
+                className.matches(Regex("[A-Za-z0-9_.$]{3,240}"))
+            })
         }
+        require(verifiedSkipViewIds.isEmpty() || nodePolicy == NodePolicy.VERIFIED)
+        require(verifiedSkipViewIds.all { viewId ->
+            viewId.matches(Regex("[A-Za-z0-9_.]+:id/[A-Za-z0-9_]+"))
+        })
     }
 
     fun supports(versionCode: Long?): Boolean {

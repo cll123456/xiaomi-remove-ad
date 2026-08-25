@@ -20,6 +20,7 @@ app/src/main/java/app/jingqi/guard/rules/
 - 节点安全策略；
 - 可选的最低/最高 versionCode；
 - 可选的固定视觉模板引用；
+- 可选的已验证跳过控件资源 ID；
 - 敏感应用标记。
 
 节点安全策略：
@@ -31,7 +32,9 @@ app/src/main/java/app/jingqi/guard/rules/
 
 ## 视觉规则
 
-`VisualSplashRule` 只能引用编译时固定的 `profileId`，并包含归一化点击位置、启动延迟和有效时间窗口。
+`VisualSplashRule` 只能引用编译时固定的 `profileId`，并包含归一化点击位置、启动延迟、复查间隔、最大次数、有效时间窗口以及可选的精确 Activity 白名单。
+
+视觉检测可以在有效启动窗口内重复，但每次都必须同时满足包名和同一次启动代次；规则声明了 Activity 白名单时还必须精确匹配。第一次命中后，本轮所有后续节点及视觉点击都会停止。
 
 远程数据不能提供视觉 ROI、像素算法或任意点击坐标。新增视觉模板必须经过代码审查、APK 发布和实机测试。
 

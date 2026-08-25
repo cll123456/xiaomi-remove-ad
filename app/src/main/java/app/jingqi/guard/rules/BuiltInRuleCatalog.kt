@@ -4,7 +4,7 @@ import app.jingqi.guard.system.PrivilegedContract
 
 object BuiltInRuleCatalog {
     const val SCHEMA_VERSION = 1
-    const val REVISION = 1L
+    const val REVISION = 2L
 
     val rules: List<AppRule> = listOf(
         AppRule(
@@ -26,7 +26,33 @@ object BuiltInRuleCatalog {
             visualSplash = VisualSplashRule(
                 profileId = PrivilegedContract.SPLASH_IQIYI,
                 tapX = 0.850f,
-                tapY = 0.042f
+                tapY = 0.035f,
+                startupDelayMillis = 600L,
+                activeWindowMillis = 3_750L,
+                retryIntervalMillis = 350L,
+                maxAttempts = 10
+            )
+        ),
+        AppRule(
+            id = "shenzhen-air.splash.verified.v1",
+            packageName = "com.air.sz",
+            displayName = "深圳航空",
+            nodePolicy = NodePolicy.VERIFIED,
+            verifiedSkipViewIds = setOf("com.air.sz:id/count_down")
+        ),
+        AppRule(
+            id = "miui-music.splash.visual.v1",
+            packageName = "com.miui.player",
+            displayName = "小米音乐",
+            nodePolicy = NodePolicy.VERIFIED,
+            visualSplash = VisualSplashRule(
+                profileId = PrivilegedContract.SPLASH_MIUI_MUSIC,
+                tapX = 0.855f,
+                tapY = 0.091f,
+                startupDelayMillis = 250L,
+                activeWindowMillis = 3_750L,
+                retryIntervalMillis = 350L,
+                maxAttempts = 11
             )
         ),
         AppRule(

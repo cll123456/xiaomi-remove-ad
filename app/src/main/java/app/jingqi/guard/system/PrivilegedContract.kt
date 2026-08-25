@@ -18,6 +18,7 @@ object PrivilegedContract {
 
     const val SPLASH_CTRIP = 1
     const val SPLASH_IQIYI = 2
+    const val SPLASH_MIUI_MUSIC = 3
 
     data class KnownSetting(
         val namespace: String,

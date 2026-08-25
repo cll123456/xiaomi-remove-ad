@@ -25,6 +25,22 @@ class BuiltInRuleCatalogTest {
             PrivilegedContract.SPLASH_IQIYI,
             BuiltInRuleCatalog.find("com.qiyi.video")?.visualSplash?.profileId
         )
+        assertEquals(
+            PrivilegedContract.SPLASH_MIUI_MUSIC,
+            BuiltInRuleCatalog.find("com.miui.player")?.visualSplash?.profileId
+        )
+        assertEquals(10, BuiltInRuleCatalog.find("com.qiyi.video")?.visualSplash?.maxAttempts)
+    }
+
+    @Test
+    fun observedNodeRulesAreExactAndVerified() {
+        val shenzhenAir = BuiltInRuleCatalog.find("com.air.sz")
+        assertEquals(NodePolicy.VERIFIED, shenzhenAir?.nodePolicy)
+        assertEquals(setOf("com.air.sz:id/count_down"), shenzhenAir?.verifiedSkipViewIds)
+
+        val miuiMusic = BuiltInRuleCatalog.find("com.miui.player")
+        assertEquals(NodePolicy.VERIFIED, miuiMusic?.nodePolicy)
+        assertEquals(11, miuiMusic?.visualSplash?.maxAttempts)
     }
 
     @Test
