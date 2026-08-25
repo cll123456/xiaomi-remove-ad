@@ -7,3 +7,9 @@
 # build always packages public Conscrypt and deliberately excludes the hidden
 # API bypass dependency, so that fallback class is unreachable.
 -dontwarn org.lsposed.hiddenapibypass.HiddenApiBypass
+
+# Bouncy Castle loads the X.509 mapping class and registers the factory by
+# string name. Preserve only that reflective surface; the LDAP/JNDI certificate
+# stores and unrelated provider algorithms are not part of the Android build.
+-keep class org.bouncycastle.jcajce.provider.asymmetric.X509$Mappings { *; }
+-keep class org.bouncycastle.jcajce.provider.asymmetric.x509.CertificateFactory { *; }

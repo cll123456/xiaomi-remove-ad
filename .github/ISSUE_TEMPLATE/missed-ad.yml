@@ -58,7 +58,7 @@ body:
     id: jingqi_version
     attributes:
       label: 净启版本
-      placeholder: 例如：0.9.1 (13)
+      placeholder: 例如：0.9.8 (20)
     validations:
       required: true
   - type: checkboxes

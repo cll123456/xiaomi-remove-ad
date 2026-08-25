@@ -27,6 +27,7 @@ internal class AdbIdentityStore(context: Context) {
     @Synchronized
     fun ensureLoaded() {
         if (loaded) return
+        CryptoProviderBootstrap.ensureBouncyCastleX509Available()
         val restored = runCatching { readEncryptedIdentity() }
             .getOrNull()
             ?.let { (certificate, privateKey) ->

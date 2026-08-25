@@ -26,7 +26,8 @@ data class GovernanceState(
     val title: String = "正在检查专家权限…",
     val detail: String = "",
     val results: List<GovernanceItem> = emptyList(),
-    val canRestore: Boolean = false
+    val canRestore: Boolean = false,
+    val awaitingPairingCode: Boolean = false
 ) {
     enum class Phase {
         CHECKING,
@@ -97,6 +98,10 @@ class HyperOsGovernance(private val context: Context) {
     }
 
     fun refresh() {
+        EmbeddedAdbRuntime.activePairingStatus()?.let {
+            onPairingStatus(it)
+            return
+        }
         if (!EmbeddedAdbRuntime.hasPairedIdentity()) {
             _state.value = GovernanceState(
                 phase = GovernanceState.Phase.NOT_PAIRED,
@@ -120,7 +125,9 @@ class HyperOsGovernance(private val context: Context) {
             _state.value = if (ready) readyState() else GovernanceState(
                 phase = GovernanceState.Phase.DISCONNECTED,
                 title = "无线调试当前未连接",
-                detail = "请打开无线调试并返回净启；如果系统已忘记净启，可重新配对。",
+                detail = EmbeddedAdbRuntime.status.value.detail.ifBlank {
+                    "请打开无线调试并返回净启；如果系统已忘记净启，可重新配对。"
+                },
                 canRestore = hasSnapshot()
             )
         }
@@ -130,6 +137,8 @@ class HyperOsGovernance(private val context: Context) {
         AdbPairingService.start(context)
         openWirelessDebugging()
     }
+
+    fun cancelPairing() = AdbPairingService.cancel(context)
 
     fun openWirelessDebugging() {
         context.startActivity(
@@ -270,13 +279,14 @@ class HyperOsGovernance(private val context: Context) {
                 _state.value = GovernanceState(
                     phase = GovernanceState.Phase.PAIRING,
                     title = when (status.phase) {
-                        PairingStatus.Phase.WAITING_FOR_CODE -> "等待你输入六位配对码"
+                        PairingStatus.Phase.WAITING_FOR_CODE -> "等待系统显示六位配对码"
                         PairingStatus.Phase.DISCOVERING -> "正在确认本机配对端口"
                         PairingStatus.Phase.PAIRING -> "正在进行加密配对"
                         else -> "正在连接专家权限"
                     },
                     detail = status.detail,
-                    canRestore = hasSnapshot()
+                    canRestore = hasSnapshot(),
+                    awaitingPairingCode = status.phase == PairingStatus.Phase.WAITING_FOR_CODE
                 )
             }
             PairingStatus.Phase.READY -> _state.value = readyState()
@@ -323,6 +333,6 @@ class HyperOsGovernance(private val context: Context) {
         const val KEY_SNAPSHOT_CREATED_AT = "snapshot_created_at"
         const val KEY_LAST_APPLIED_AT = "last_applied_at"
         const val KEY_MSA_INSTALLED = "msa_installed"
-        const val REFRESH_TIMEOUT_MS = 6_000L
+        const val REFRESH_TIMEOUT_MS = 30_000L
     }
 }

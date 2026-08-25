@@ -16,6 +16,11 @@ import android.view.accessibility.AccessibilityNodeInfo
 import app.jingqi.guard.rules.BuiltInRuleCatalog
 import app.jingqi.guard.rules.NodePolicy
 import app.jingqi.guard.rules.VisualSplashRule
+import app.jingqi.guard.system.adb.AdbPairingService
+import app.jingqi.guard.system.adb.EmbeddedAdbRuntime
+import app.jingqi.guard.system.adb.PairingStatus
+import app.jingqi.guard.system.adb.WirelessPairingText
+import app.jingqi.guard.system.adb.WirelessPairingTextDetector
 import java.util.ArrayDeque
 import java.util.concurrent.Executors
 
@@ -24,6 +29,8 @@ class SplashSkipAccessibilityService : AccessibilityService() {
     private var packageEnteredAt = 0L
     private var lastAttemptAt = 0L
     private var canvasHandledForEntry = false
+    private var lastSubmittedPairingCode = ""
+    private var lastPairingSubmissionAt = 0L
     private val handler = Handler(Looper.getMainLooper())
     private val screenshotExecutor = Executors.newSingleThreadExecutor()
 
@@ -44,6 +51,7 @@ class SplashSkipAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow
         val packageName = event.packageName?.toString() ?: root?.packageName?.toString() ?: return
         val now = SystemClock.elapsedRealtime()
+        if (maybeSubmitWirelessPairingCode(packageName, root, now)) return
         if (packageName != activePackage) {
             activePackage = packageName
             packageEnteredAt = now
@@ -63,6 +71,49 @@ class SplashSkipAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() = Unit
+
+    /**
+     * The user must explicitly start pairing first. During that short session we inspect only
+     * Android Settings and require pairing-specific labels before accepting an exact six-digit
+     * value. This keeps the system dialog foreground, so HyperOS cannot rotate the pairing code.
+     */
+    private fun maybeSubmitWirelessPairingCode(
+        packageName: String,
+        root: AccessibilityNodeInfo?,
+        now: Long
+    ): Boolean {
+        if (packageName != ANDROID_SETTINGS_PACKAGE || root == null) return false
+        val pairing = EmbeddedAdbRuntime.activePairingStatus() ?: return false
+        if (pairing.phase != PairingStatus.Phase.WAITING_FOR_CODE) return false
+
+        val code = WirelessPairingTextDetector.findCode(collectPairingText(root)) ?: return false
+        if (code == lastSubmittedPairingCode && now - lastPairingSubmissionAt < PAIRING_DEDUP_MS) {
+            return true
+        }
+        if (!AdbPairingService.submitCode(this, code)) return false
+        lastSubmittedPairingCode = code
+        lastPairingSubmissionAt = now
+        return true
+    }
+
+    private fun collectPairingText(root: AccessibilityNodeInfo): List<WirelessPairingText> {
+        val result = ArrayList<WirelessPairingText>()
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited++ < MAX_PAIRING_NODES) {
+            val node = queue.removeFirst()
+            val viewId = node.viewIdResourceName.orEmpty()
+            node.text?.toString()?.takeIf(String::isNotBlank)?.let {
+                result += WirelessPairingText(it, viewId)
+            }
+            node.contentDescription?.toString()?.takeIf(String::isNotBlank)?.let {
+                result += WirelessPairingText(it, viewId)
+            }
+            for (index in 0 until node.childCount) node.getChild(index)?.let(queue::addLast)
+        }
+        return result
+    }
 
     override fun onDestroy() {
         screenshotExecutor.shutdownNow()
@@ -229,6 +280,9 @@ class SplashSkipAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val STARTUP_WINDOW_MS = 15_000L
+        private const val ANDROID_SETTINGS_PACKAGE = "com.android.settings"
+        private const val MAX_PAIRING_NODES = 240
+        private const val PAIRING_DEDUP_MS = 15_000L
         private val SENSITIVE_HINTS = listOf(
             "bank", "mbank", "wallet", "alipay", "unionpay", "payment", "finance",
             "securities", "broker", "authenticator", "password", "keychain"

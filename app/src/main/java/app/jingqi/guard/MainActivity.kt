@@ -85,7 +85,6 @@ import app.jingqi.guard.rules.BuiltInRuleCatalog
 import app.jingqi.guard.rules.NodePolicy
 import app.jingqi.guard.system.GovernanceState
 import app.jingqi.guard.system.HyperOsGovernance
-import app.jingqi.guard.system.adb.AdbPairingService
 import app.jingqi.guard.vpn.DnsVpnService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -201,7 +200,6 @@ private fun JingQiRoot() {
     val permissionRevision by activity.permissionRevision.collectAsState()
     var tab by remember { mutableIntStateOf(0) }
     var oneTapResult by remember { mutableStateOf<String?>(null) }
-    var pairAfterNotificationPermission by remember { mutableStateOf(false) }
     val permissions = remember(permissionRevision, running) { activity.permissionSnapshot() }
 
     fun runAuthorizedProtection() {
@@ -230,32 +228,14 @@ private fun JingQiRoot() {
         if (it.resultCode == Activity.RESULT_OK) runAuthorizedProtection()
         else oneTapResult = "没有获得 VPN 连接许可，本地广告过滤未启动。"
     }
-    val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+    val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         activity.refreshPermissionState()
-        if (pairAfterNotificationPermission) {
-            pairAfterNotificationPermission = false
-            if (granted) activity.governance.startPairing()
-            else oneTapResult = "无线配对需要通知输入框；通知权限被拒绝，本次没有开始配对。"
-        }
     }
 
     fun requestPairing() {
-        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(
-                activity,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            pairAfterNotificationPermission = true
-            notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else if (!NotificationManagerCompat.from(activity).areNotificationsEnabled() ||
-            AdbPairingService.isNotificationChannelBlocked(activity)
-        ) {
-            oneTapResult = "配对通知已被系统关闭，请允许净启通知后返回专家页重试。"
-            tab = 2
-            activity.openNotificationSettings()
-        } else {
-            activity.governance.startPairing()
-        }
+        tab = 1
+        oneTapResult = "已打开无线调试；生成六位码后返回净启专家页输入。"
+        activity.governance.startPairing()
     }
 
     fun requestProtection(enable: Boolean) {
@@ -310,7 +290,13 @@ private fun JingQiRoot() {
                         onOpenPermissions = { tab = 2 },
                         onOpenExpert = { tab = 1 }
                     )
-                    1 -> SystemGovernance(entitlement, activity.governance, ::requestPairing)
+                    1 -> SystemGovernance(
+                        entitlement = entitlement,
+                        governance = activity.governance,
+                        accessibilityEnabled = permissions.accessibilityEnabled,
+                        onPairing = ::requestPairing,
+                        onAccessibility = activity::openAccessibilitySettings
+                    )
                     2 -> PermissionCenter(
                         running = running,
                         entitlement = entitlement,
@@ -503,7 +489,9 @@ private fun StatusCard(
 private fun SystemGovernance(
     entitlement: EntitlementState,
     governance: HyperOsGovernance,
-    onPairing: () -> Unit
+    accessibilityEnabled: Boolean,
+    onPairing: () -> Unit,
+    onAccessibility: () -> Unit
 ) {
     val state by governance.state.collectAsState()
     val busy = state.phase in setOf(
@@ -529,6 +517,33 @@ private fun SystemGovernance(
         item {
             Card(
                 colors = CardDefaults.cardColors(
+                    containerColor = if (accessibilityEnabled) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
+                )
+            ) {
+                Column(Modifier.fillMaxWidth().padding(18.dp)) {
+                    Text("第三方应用开屏广告", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        if (accessibilityEnabled) {
+                            "开屏守护已开启。酷狗、美团等文字跳过控件和携程专用视觉规则才会运行。"
+                        } else {
+                            "开屏守护当前关闭，因此酷狗、携程、美团的开屏跳过规则都不会运行。专家配对不能代替这项系统授权。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.DarkGray
+                    )
+                    if (!accessibilityEnabled) {
+                        Spacer(Modifier.height(10.dp))
+                        Button(onClick = onAccessibility, modifier = Modifier.fillMaxWidth()) {
+                            Text("去系统设置开启开屏守护")
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
                     containerColor = if (state.phase == GovernanceState.Phase.DONE) Color(0xFFE8F5E9) else Color(0xFFE8EAF6)
                 ),
                 shape = RoundedCornerShape(20.dp)
@@ -539,31 +554,57 @@ private fun SystemGovernance(
                     Text(state.title, fontWeight = FontWeight.Bold)
                     if (state.detail.isNotBlank()) Text(state.detail, style = MaterialTheme.typography.bodySmall, color = Color.DarkGray)
                     Spacer(Modifier.height(16.dp))
-                    Button(
-                        onClick = {
-                            when (state.phase) {
-                                GovernanceState.Phase.NOT_PAIRED -> onPairing()
-                                GovernanceState.Phase.DISCONNECTED -> governance.openWirelessDebugging()
-                                else -> governance.apply()
-                            }
-                        },
-                        enabled = !busy,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (busy) {
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.size(10.dp))
+                    if (state.awaitingPairingCode) {
+                        Button(
+                            onClick = if (accessibilityEnabled) onPairing else onAccessibility,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (accessibilityEnabled) "重新打开系统配对页面" else "先开启开屏守护")
                         }
-                        Text(
-                            when (state.phase) {
-                                GovernanceState.Phase.NOT_PAIRED -> "开始一次本机配对"
-                                GovernanceState.Phase.PAIRING -> "配对进行中…"
-                                GovernanceState.Phase.DISCONNECTED -> "打开无线调试"
-                                GovernanceState.Phase.WORKING -> "正在治理…"
-                                GovernanceState.Phase.CHECKING -> "正在检查连接…"
-                                else -> "一键关闭系统广告"
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = governance::cancelPairing,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("取消本次配对")
+                        }
+                    } else {
+                        Button(
+                            onClick = {
+                                when (state.phase) {
+                                    GovernanceState.Phase.NOT_PAIRED -> {
+                                        if (accessibilityEnabled) onPairing() else onAccessibility()
+                                    }
+                                    GovernanceState.Phase.DISCONNECTED -> governance.openWirelessDebugging()
+                                    else -> governance.apply()
+                                }
+                            },
+                            enabled = !busy,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (busy) {
+                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.size(10.dp))
                             }
-                        )
+                            Text(
+                                when (state.phase) {
+                                    GovernanceState.Phase.NOT_PAIRED -> {
+                                        if (accessibilityEnabled) "开始一次本机配对" else "先开启开屏守护"
+                                    }
+                                    GovernanceState.Phase.PAIRING -> "配对进行中…"
+                                    GovernanceState.Phase.DISCONNECTED -> "打开无线调试"
+                                    GovernanceState.Phase.WORKING -> "正在治理…"
+                                    GovernanceState.Phase.CHECKING -> "正在检查连接…"
+                                    else -> "一键关闭系统广告"
+                                }
+                            )
+                        }
+                        if (state.phase == GovernanceState.Phase.PAIRING) {
+                            Spacer(Modifier.height(8.dp))
+                            TextButton(onClick = governance::cancelPairing, modifier = Modifier.fillMaxWidth()) {
+                                Text("取消配对")
+                            }
+                        }
                     }
                     if (state.canRestore) {
                         Spacer(Modifier.height(8.dp))
@@ -589,7 +630,7 @@ private fun SystemGovernance(
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF8E1))) {
                 Text(
-                    "首次配对：点上方按钮 → 在开发者选项进入“无线调试” → 点“使用配对码配对设备” → 保持六位码窗口打开，下拉通知栏，在净启通知中输入配对码。成功后不需要安装 Shizuku。",
+                    "首次配对：先由你在系统无障碍页开启“净启·开屏守护”，再点上方按钮 → 开启“无线调试” → 点“使用配对码配对设备”并保持窗口不动。净启只在这次配对期间从系统设置读取六位码并立即本机提交，不需要切换界面，也不需要安装 Shizuku。等待超过五分钟会自动取消。",
                     Modifier.padding(16.dp),
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -618,6 +659,7 @@ private fun SystemGovernance(
             }
         }
     }
+
 }
 
 @Composable
@@ -657,7 +699,7 @@ private fun PermissionCenter(
                 icon = Icons.Outlined.HealthAndSafety,
                 title = "开屏守护（无障碍）",
                 status = if (permissions.accessibilityEnabled) "已由用户开启" else "未开启",
-                explanation = "仅在应用启动窗口识别明确跳过控件；金融应用严格限制或完全排除。",
+                explanation = "仅在应用启动窗口识别明确跳过控件；你主动发起专家配对时，还会在系统设置配对窗口一次性读取六位码。金融应用严格限制或完全排除。",
                 ready = permissions.accessibilityEnabled,
                 action = "打开系统设置",
                 onAction = onAccessibility
@@ -701,7 +743,7 @@ private fun PermissionCenter(
                     governanceState.phase == GovernanceState.Phase.PAIRING -> "正在配对"
                     else -> "需要一次用户确认"
                 },
-                explanation = "首次由你开启无线调试并输入系统显示的六位码；配对后日常治理可以一键执行，不需要 Shizuku。",
+                explanation = "首次由你开启无线调试并保持系统六位码窗口在前台，净启自动本机提交；配对后日常治理可以一键执行，不需要 Shizuku。",
                 ready = governanceState.phase in setOf(GovernanceState.Phase.READY, GovernanceState.Phase.DONE),
                 action = "开始/重新配对",
                 onAction = onPairing

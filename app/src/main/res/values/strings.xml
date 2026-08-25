@@ -4,5 +4,5 @@
     <string name="vpn_channel_name">广告过滤</string>
     <string name="vpn_channel_description">本地 DNS 广告过滤运行状态</string>
     <string name="splash_skip_service_name">净启·开屏守护</string>
-    <string name="splash_skip_description">仅在应用启动后的短时间内识别明确的“跳过”控件；金融应用使用严格规则或完全排除。不读取输入内容，不保存或上传界面数据。</string>
+    <string name="splash_skip_description">仅在应用启动后的短时间内识别明确的“跳过”控件；金融应用使用严格规则或完全排除。你主动发起专家配对时，仅从系统设置配对窗口读取一次六位码并立即本机提交。界面数据不保存、不上传。</string>
 </resources>

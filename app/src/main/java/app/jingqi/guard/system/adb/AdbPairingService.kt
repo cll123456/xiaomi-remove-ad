@@ -7,25 +7,31 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
-import android.provider.Settings
 import androidx.core.app.NotificationCompat
-import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
+import app.jingqi.guard.MainActivity
 import app.jingqi.guard.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Keeps the pairing-code window alive while the user enters its six-digit code
- * through a notification RemoteInput. The code is never persisted or logged.
+ * Keeps pairing alive while the user leaves Android's six-digit pairing dialog foreground.
+ * The narrowly scoped accessibility helper hands the code over in process; it is never
+ * persisted, placed in Intent extras, or logged.
  */
 class AdbPairingService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val notificationManager by lazy { getSystemService(NotificationManager::class.java) }
+    private val pairingInFlight = AtomicBoolean(false)
+    private var waitingTimeout: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -40,23 +46,33 @@ class AdbPairingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            ACTION_CANCEL -> {
+                startForeground(NOTIFICATION_ID, waitingNotification())
+                clearPendingCode()
+                EmbeddedAdbRuntime.cancelPairing()
+                finishNotification(false, "本次无线调试配对已取消")
+            }
             ACTION_SUBMIT_CODE -> {
                 startForeground(NOTIFICATION_ID, waitingNotification())
-                val code = RemoteInput.getResultsFromIntent(intent)
-                    ?.getCharSequence(KEY_PAIRING_CODE)
-                    ?.toString()
-                    ?.trim()
-                    .orEmpty()
-                if (!code.matches(Regex("^[0-9]{6}$"))) {
-                    EmbeddedAdbRuntime.reportFailure(IllegalArgumentException("配对码必须是 6 位数字"))
-                    finishNotification(false, "配对码格式不正确，请重新开始配对")
-                } else {
-                    pair(code.toCharArray())
+                waitingTimeout?.cancel()
+                val codeChars = pendingCode.getAndSet(null)
+                when {
+                    codeChars == null -> {
+                        EmbeddedAdbRuntime.markWaitingForCode()
+                        notificationManager.notify(
+                            NOTIFICATION_ID,
+                            waitingNotification("未读取到有效配对码，请保持系统配对窗口打开")
+                        )
+                        scheduleWaitingTimeout()
+                    }
+                    !pairingInFlight.compareAndSet(false, true) -> codeChars.fill('\u0000')
+                    else -> pair(codeChars)
                 }
             }
             else -> {
                 EmbeddedAdbRuntime.markWaitingForCode()
                 startForeground(NOTIFICATION_ID, waitingNotification())
+                scheduleWaitingTimeout()
             }
         }
         return START_NOT_STICKY
@@ -65,6 +81,8 @@ class AdbPairingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        waitingTimeout?.cancel()
+        clearPendingCode()
         scope.cancel()
         super.onDestroy()
     }
@@ -79,6 +97,7 @@ class AdbPairingService : Service() {
                 EmbeddedAdbRuntime.pairWithThisDevice(String(codeChars))
             }
             codeChars.fill('\u0000')
+            pairingInFlight.set(false)
             withContext(Dispatchers.Main) {
                 result.onSuccess { connected ->
                     finishNotification(
@@ -94,17 +113,31 @@ class AdbPairingService : Service() {
         }
     }
 
-    private fun waitingNotification() = NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun scheduleWaitingTimeout() {
+        waitingTimeout?.cancel()
+        waitingTimeout = scope.launch {
+            delay(WAITING_TIMEOUT_MILLIS)
+            withContext(Dispatchers.Main) {
+                if (!pairingInFlight.get()) {
+                    EmbeddedAdbRuntime.cancelPairing("等待配对码已超时，请重新开始配对")
+                    finishNotification(false, "等待配对码已超时，请重新开始")
+                }
+            }
+        }
+    }
+
+    private fun waitingNotification(detail: String = "请保持系统六位配对码窗口打开，净启会在本机自动确认") =
+        NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_shield)
-        .setContentTitle("净启：输入无线调试配对码")
-        .setContentText("保持系统配对码窗口打开，下拉通知栏并点击“输入配对码”")
+        .setContentTitle("净启：等待无线调试配对码")
+        .setContentText(detail)
         .setStyle(
             NotificationCompat.BigTextStyle().bigText(
-                "在开发者选项进入“无线调试”→“使用配对码配对设备”，保持六位码窗口打开，然后下拉通知栏从这里输入。"
+                "在开发者选项进入“无线调试”→“使用配对码配对设备”，并保持该窗口在前台。已授权的开屏守护只在本次配对期间从系统设置读取六位码并立即本机提交。"
             )
         )
-        .setContentIntent(developerSettingsIntent())
-        .addAction(pairingCodeAction())
+        .setContentIntent(openAppIntent())
+        .addAction(cancelAction())
         .setOngoing(true)
         .setOnlyAlertOnce(true)
         .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -136,34 +169,23 @@ class AdbPairingService : Service() {
         stopSelf()
     }
 
-    private fun pairingCodeAction(): NotificationCompat.Action {
-        val remoteInput = RemoteInput.Builder(KEY_PAIRING_CODE)
-            .setLabel("输入 6 位配对码")
-            .build()
-        val submit = PendingIntent.getService(
+    private fun cancelAction() = NotificationCompat.Action.Builder(
+        R.drawable.ic_shield,
+        "取消",
+        PendingIntent.getService(
             this,
-            REQUEST_SUBMIT_CODE,
-            Intent(this, AdbPairingService::class.java).setAction(ACTION_SUBMIT_CODE),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            REQUEST_CANCEL,
+            Intent(this, AdbPairingService::class.java).setAction(ACTION_CANCEL),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Action.Builder(
-            R.drawable.ic_shield,
-            "输入配对码",
-            submit
-        ).addRemoteInput(remoteInput).build()
-    }
-
-    private fun developerSettingsIntent(): PendingIntent = PendingIntent.getActivity(
-        this,
-        REQUEST_DEVELOPER_SETTINGS,
-        Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-    )
+    ).build()
 
     private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
         this,
         REQUEST_OPEN_APP,
-        packageManager.getLaunchIntentForPackage(packageName),
+        packageManager.getLaunchIntentForPackage(packageName)?.addFlags(
+            Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        ) ?: Intent(this, MainActivity::class.java),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
 
@@ -178,12 +200,13 @@ class AdbPairingService : Service() {
     companion object {
         private const val CHANNEL_ID = "jingqi_adb_pairing"
         private const val NOTIFICATION_ID = 17310
-        private const val REQUEST_SUBMIT_CODE = 17311
-        private const val REQUEST_DEVELOPER_SETTINGS = 17312
         private const val REQUEST_OPEN_APP = 17313
+        private const val REQUEST_CANCEL = 17314
         private const val ACTION_START = "app.jingqi.guard.action.START_ADB_PAIRING"
         private const val ACTION_SUBMIT_CODE = "app.jingqi.guard.action.SUBMIT_ADB_PAIRING_CODE"
-        private const val KEY_PAIRING_CODE = "jingqi_pairing_code"
+        private const val ACTION_CANCEL = "app.jingqi.guard.action.CANCEL_ADB_PAIRING"
+        private const val WAITING_TIMEOUT_MILLIS = 5 * 60_000L
+        private val pendingCode = AtomicReference<CharArray?>(null)
 
         fun start(context: Context) {
             EmbeddedAdbRuntime.initialize(context)
@@ -192,6 +215,28 @@ class AdbPairingService : Service() {
                 context,
                 Intent(context, AdbPairingService::class.java).setAction(ACTION_START)
             )
+        }
+
+        fun submitCode(context: Context, code: String): Boolean {
+            val codeChars = PairingCode.toCharsOrNull(code) ?: return false
+            pendingCode.getAndSet(codeChars)?.fill('\u0000')
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, AdbPairingService::class.java).setAction(ACTION_SUBMIT_CODE)
+            )
+            return true
+        }
+
+        fun cancel(context: Context) {
+            EmbeddedAdbRuntime.initialize(context)
+            clearPendingCode()
+            EmbeddedAdbRuntime.cancelPairing()
+            context.stopService(Intent(context, AdbPairingService::class.java))
+            context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
+        }
+
+        private fun clearPendingCode() {
+            pendingCode.getAndSet(null)?.fill('\u0000')
         }
 
         fun isNotificationChannelBlocked(context: Context): Boolean {
