@@ -4,9 +4,13 @@ import app.jingqi.guard.system.PrivilegedContract
 
 object BuiltInRuleCatalog {
     const val SCHEMA_VERSION = 1
-    const val REVISION = 2L
+    const val REVISION = 3L
 
     val rules: List<AppRule> = listOf(
+        // These use the conservative generic text matcher, not blind coordinates.
+        AppRule("jd.splash.text.v1", "com.jingdong.app.mall", "京东", nodePolicy = NodePolicy.GENERAL),
+        AppRule("kugou.splash.text.v1", "com.kugou.android", "酷狗音乐", nodePolicy = NodePolicy.GENERAL),
+        AppRule("taobao.splash.text.v1", "com.taobao.taobao", "淘宝", nodePolicy = NodePolicy.GENERAL),
         AppRule(
             id = "ctrip.splash.visual.v1",
             packageName = "ctrip.android.view",

@@ -9,10 +9,15 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import android.os.Handler
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import app.jingqi.guard.MainActivity
 import app.jingqi.guard.R
 import app.jingqi.guard.data.AppState
+import app.jingqi.guard.accessibility.SplashRuntime
+import java.io.FileDescriptor
+import java.io.PrintWriter
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.FileInputStream
@@ -36,6 +41,18 @@ class DnsVpnService : VpnService() {
     private var worker: Thread? = null
     private var queryExecutor: ExecutorService? = null
     private val active = AtomicBoolean(false)
+    private val handler = Handler(Looper.getMainLooper())
+    private var lastProtectionSummary = ""
+    private val healthCheck = object : Runnable {
+        override fun run() {
+            val summary = protectionSummary()
+            if (summary != lastProtectionSummary && active.get()) {
+                getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification())
+                lastProtectionSummary = summary
+            }
+            handler.postDelayed(this, 5_000L)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -52,10 +69,13 @@ class DnsVpnService : VpnService() {
         startForeground(NOTIFICATION_ID, notification())
         AppState.setDesiredEnabled(true)
         if (active.compareAndSet(false, true)) startFiltering()
+        handler.removeCallbacks(healthCheck)
+        handler.post(healthCheck)
         return START_STICKY
     }
 
     override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
         stopFiltering()
         super.onDestroy()
     }
@@ -245,6 +265,7 @@ class DnsVpnService : VpnService() {
     }
 
     private fun stopFiltering() {
+        handler.removeCallbacks(healthCheck)
         active.set(false)
         runCatching { tunnel?.close() }
         tunnel = null
@@ -256,10 +277,20 @@ class DnsVpnService : VpnService() {
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
+    override fun dump(fd: FileDescriptor, writer: PrintWriter, args: Array<out String>?) {
+        writer.println("jingqiVpn running=${AppState.running.value} desired=${AppState.wasEnabled()} tunnel=${tunnel != null}")
+        writer.println("splashHealth=${SplashRuntime.health(this)}")
+    }
+
+    private fun protectionSummary(): String =
+        "DNS：${if (AppState.running.value) "运行中" else "启动中"}；开屏：${SplashRuntime.health(this).description}"
+
     private fun notification() = NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_shield)
-        .setContentTitle("广告过滤正在运行")
-        .setContentText("仅在本机过滤已知广告域名")
+        .setContentTitle("净启日常保护")
+        .setContentText(protectionSummary())
+        .setStyle(NotificationCompat.BigTextStyle().bigText(protectionSummary()))
+        .setOnlyAlertOnce(true)
         .setOngoing(true)
         .setContentIntent(
             PendingIntent.getActivity(
@@ -268,7 +299,7 @@ class DnsVpnService : VpnService() {
             )
         )
         .addAction(
-            0, "停止",
+            0, "停止 DNS 过滤",
             PendingIntent.getService(
                 this, 1, Intent(this, DnsVpnService::class.java).setAction(ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT

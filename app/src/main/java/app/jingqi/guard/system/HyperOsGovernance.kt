@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.DateFormat
+import java.util.Date
 
 data class GovernanceItem(val title: String, val detail: String, val success: Boolean)
 
@@ -88,9 +90,20 @@ class HyperOsGovernance(private val context: Context) {
 
     fun attach() {
         EmbeddedAdbRuntime.initialize(context)
+        _state.value = offlineState()
         scope.launch { EmbeddedAdbRuntime.status.collect(::onPairingStatus) }
-        refresh()
     }
+
+    /** Opening the daily dashboard must never discover/connect ADB or open Settings. */
+    private fun offlineState() = GovernanceState(
+        phase = if (EmbeddedAdbRuntime.hasPairedIdentity()) GovernanceState.Phase.DISCONNECTED
+            else GovernanceState.Phase.NOT_PAIRED,
+        title = "系统治理是可选操作，日常守护不需要连接",
+        detail = prefs.getLong(KEY_LAST_VERIFIED_AT, 0L).takeIf { it > 0 }?.let {
+            "上次完整验证：${DateFormat.getDateTimeInstance().format(Date(it))}。当前未联网复查，系统更新可能恢复设置。"
+        } ?: "第三方应用开屏由开屏守护处理。只有执行或恢复系统治理时，才需要开启无线调试。",
+        canRestore = hasSnapshot()
+    )
 
     fun detach() {
         refreshJob?.cancel()
@@ -126,7 +139,7 @@ class HyperOsGovernance(private val context: Context) {
                 phase = GovernanceState.Phase.DISCONNECTED,
                 title = "无线调试当前未连接",
                 detail = EmbeddedAdbRuntime.status.value.detail.ifBlank {
-                    "请打开无线调试并返回净启；如果系统已忘记净启，可重新配对。"
+                    "需要系统治理时才开启无线调试，然后点“检查已有配对连接”；日常开屏守护不受影响。"
                 },
                 canRestore = hasSnapshot()
             )
@@ -201,6 +214,7 @@ class HyperOsGovernance(private val context: Context) {
     }
 
     private suspend fun apply(privileged: PrivilegedGateway): List<GovernanceItem> {
+        prefs.edit().remove(KEY_LAST_VERIFIED_AT).apply()
         if (!hasSnapshot()) createSnapshot(privileged)
         val msaRemoved = privileged.removeKnownPackageForCurrentUser(PrivilegedContract.PACKAGE_MSA)
         val results = mutableListOf(
@@ -220,7 +234,9 @@ class HyperOsGovernance(private val context: Context) {
                 success = verified
             )
         }
-        prefs.edit().putLong(KEY_LAST_APPLIED_AT, System.currentTimeMillis()).apply()
+        if (results.all { it.success }) {
+            prefs.edit().putLong(KEY_LAST_VERIFIED_AT, System.currentTimeMillis()).apply()
+        }
         return results
     }
 
@@ -240,6 +256,7 @@ class HyperOsGovernance(private val context: Context) {
 
     private suspend fun restore(privileged: PrivilegedGateway): List<GovernanceItem> {
         if (!hasSnapshot()) return listOf(GovernanceItem("恢复", "没有可恢复的治理快照", false))
+        prefs.edit().remove(KEY_LAST_VERIFIED_AT).apply()
         val msaShouldExist = prefs.getBoolean(KEY_MSA_INSTALLED, true)
         val msaSuccess = if (msaShouldExist) {
             privileged.restoreKnownPackageForCurrentUser(PrivilegedContract.PACKAGE_MSA)
@@ -331,7 +348,8 @@ class HyperOsGovernance(private val context: Context) {
         const val KEY_SNAPSHOT = "snapshot"
         const val KEY_SNAPSHOT_SCHEMA = "snapshot_schema"
         const val KEY_SNAPSHOT_CREATED_AT = "snapshot_created_at"
-        const val KEY_LAST_APPLIED_AT = "last_applied_at"
+        // Old versions wrote last_applied_at even for partial failures; do not migrate it as success.
+        const val KEY_LAST_VERIFIED_AT = "last_fully_verified_at"
         const val KEY_MSA_INSTALLED = "msa_installed"
         const val REFRESH_TIMEOUT_MS = 30_000L
     }

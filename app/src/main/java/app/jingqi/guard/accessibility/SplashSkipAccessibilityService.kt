@@ -2,6 +2,8 @@ package app.jingqi.guard.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.app.KeyguardManager
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.graphics.Path
@@ -9,6 +11,7 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.Display
@@ -25,6 +28,8 @@ import app.jingqi.guard.system.adb.PairingStatus
 import app.jingqi.guard.system.adb.WirelessPairingText
 import app.jingqi.guard.system.adb.WirelessPairingTextDetector
 import java.util.ArrayDeque
+import java.io.FileDescriptor
+import java.io.PrintWriter
 import java.util.concurrent.Executors
 
 class SplashSkipAccessibilityService : AccessibilityService() {
@@ -41,15 +46,19 @@ class SplashSkipAccessibilityService : AccessibilityService() {
     private var inputMethodPackage = ""
     private val handler = Handler(Looper.getMainLooper())
     private val screenshotExecutor = Executors.newSingleThreadExecutor()
+    private var inspectionErrors = 0L
     private val foregroundWatchdog = object : Runnable {
         override fun run() {
-            inspectForegroundRoot()
+            // A stale window must not permanently stop the watchdog. No UI data is logged.
+            runCatching { inspectForegroundRoot() }.onFailure { inspectionErrors++ }
+            SplashRuntime.heartbeat()
             handler.postDelayed(this, FOREGROUND_WATCHDOG_INTERVAL_MS)
         }
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        SplashRuntime.connected(this)
         inputMethodPackage = Settings.Secure.getString(
             contentResolver,
             Settings.Secure.DEFAULT_INPUT_METHOD
@@ -64,7 +73,12 @@ class SplashSkipAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        runCatching { handleAccessibilityEvent(event) }.onFailure { inspectionErrors++ }
+    }
+
+    private fun handleAccessibilityEvent(event: AccessibilityEvent?) {
         event ?: return
+        if (!canInspectScreen()) return
         val root = currentApplicationRoot()
         val eventPackage = event.packageName?.toString()?.takeIf(String::isNotBlank)
         val rootPackage = root?.packageName?.toString()?.takeIf(String::isNotBlank)
@@ -156,17 +170,41 @@ class SplashSkipAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        SplashRuntime.disconnected()
         handler.removeCallbacksAndMessages(null)
         screenshotExecutor.shutdownNow()
         super.onDestroy()
     }
 
+    override fun onUnbind(intent: Intent?): Boolean {
+        SplashRuntime.disconnected()
+        activePackage = ""
+        entryGeneration++
+        handler.removeCallbacksAndMessages(null)
+        return super.onUnbind(intent)
+    }
+
+    override fun dump(fd: FileDescriptor, writer: PrintWriter, args: Array<out String>?) {
+        val state = SplashRuntime.state.value
+        writer.println("jingqiSplash version=${app.jingqi.guard.BuildConfig.VERSION_NAME}")
+        writer.println("connected=${state.connected} heartbeatAgeMs=${SystemClock.elapsedRealtime() - state.heartbeatAt}")
+        writer.println("submittedActions=${state.submittedActions} lastActionAt=${state.lastActionAt}")
+        // Only catalogued test targets, never window text or arbitrary application history.
+        writer.println("lastActionPackage=${state.lastActionPackage.takeIf { BuiltInRuleCatalog.find(it) != null } ?: "other"}")
+        writer.println("activeRule=${activeRule?.id ?: "general-or-excluded"} handled=$splashHandledForEntry inspectionErrors=$inspectionErrors")
+    }
+
     /**
      * Some HyperOS splash activities expose a root but emit no accessibility
-     * event until the advertisement has already ended. Poll only root ownership
-     * so those silent transitions can start the same bounded retry pipeline.
+     * event until the advertisement has already ended. Poll root ownership and
+     * scan nodes only inside the same bounded startup window, while unlocked.
      */
     private fun inspectForegroundRoot() {
+        if (!canInspectScreen()) {
+            activePackage = ""
+            entryGeneration++
+            return
+        }
         val root = currentApplicationRoot() ?: return
         val packageName = root.packageName?.toString()?.takeIf(String::isNotBlank) ?: return
         if (isTransientWindowPackage(packageName)) return
@@ -235,7 +273,7 @@ class SplashSkipAccessibilityService : AccessibilityService() {
     }
 
     private fun isCurrentEntry(packageName: String, generation: Long): Boolean =
-        activePackage == packageName &&
+        SplashRuntime.state.value.connected && activePackage == packageName &&
             entryGeneration == generation &&
             SystemClock.elapsedRealtime() - packageEnteredAt <= STARTUP_WINDOW_MS
 
@@ -258,13 +296,17 @@ class SplashSkipAccessibilityService : AccessibilityService() {
         packageName == SYSTEM_UI_PACKAGE || packageName == inputMethodPackage
 
     private fun currentApplicationRoot(): AccessibilityNodeInfo? {
+        if (!canInspectScreen()) return null
         val primary = rootInActiveWindow
         val primaryPackage = primary?.packageName?.toString().orEmpty()
+        // Never click an underlying application through the notification shade or keyboard.
+        if (isTransientWindowPackage(primaryPackage)) return null
         if (primary != null && primaryPackage.isNotBlank() &&
             !isTransientWindowPackage(primaryPackage)
         ) return primary
 
         return applicationWindows()
+            .filter { it.isActive && it.isFocused }
             .sortedByDescending { it.layer }
             .asSequence()
             .mapNotNull { it.root }
@@ -275,14 +317,12 @@ class SplashSkipAccessibilityService : AccessibilityService() {
     }
 
     private fun rootForPackage(packageName: String): AccessibilityNodeInfo? {
-        rootInActiveWindow?.takeIf {
-            it.packageName?.toString() == packageName
-        }?.let { return it }
-
-        return applicationWindows().asSequence()
-            .mapNotNull { it.root }
-            .firstOrNull { it.packageName?.toString() == packageName }
+        return currentApplicationRoot()?.takeIf { it.packageName?.toString() == packageName }
     }
+
+    private fun canInspectScreen(): Boolean =
+        getSystemService(PowerManager::class.java).isInteractive &&
+            !getSystemService(KeyguardManager::class.java).isKeyguardLocked
 
     private fun applicationWindows(): List<AccessibilityWindowInfo> =
         runCatching { windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION } }
@@ -299,6 +339,7 @@ class SplashSkipAccessibilityService : AccessibilityService() {
         config: VisualSplashRule
     ) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        if (rootForPackage(packageName) == null) return
         takeScreenshot(
             Display.DEFAULT_DISPLAY,
             screenshotExecutor,
@@ -445,7 +486,7 @@ class SplashSkipAccessibilityService : AccessibilityService() {
                 Mode.FINANCIAL_EXACT -> strictSkipText && (skipId || splashId) && hasClickableParent(node)
                 Mode.BLOCKED -> false
             }
-            if (matches) return node
+            if (matches && node.isVisibleToUser && node.isEnabled) return node
             for (index in 0 until node.childCount) node.getChild(index)?.let(queue::addLast)
         }
         return null
@@ -495,12 +536,7 @@ class SplashSkipAccessibilityService : AccessibilityService() {
     }
 
     private fun recordSkip(packageName: String) {
-        val prefs = getSharedPreferences("splash_skip", MODE_PRIVATE)
-        prefs.edit()
-            .putString("last_package", packageName)
-            .putLong("last_time", System.currentTimeMillis())
-            .putLong("total", prefs.getLong("total", 0L) + 1L)
-            .apply()
+        SplashRuntime.recordAction(this, packageName)
     }
 
     private enum class Mode { VERIFIED, GENERAL, FINANCIAL_EXACT, BLOCKED }

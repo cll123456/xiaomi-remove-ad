@@ -1,7 +1,6 @@
 package app.jingqi.guard
 
 import android.Manifest
-import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -10,8 +9,8 @@ import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
-import android.view.accessibility.AccessibilityManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -63,6 +62,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -77,6 +77,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import app.jingqi.guard.accessibility.SplashHealth
+import app.jingqi.guard.accessibility.SplashRuntime
 import app.jingqi.guard.data.AppState
 import app.jingqi.guard.data.EntitlementState
 import app.jingqi.guard.data.Entitlements
@@ -88,6 +92,7 @@ import app.jingqi.guard.system.HyperOsGovernance
 import app.jingqi.guard.vpn.DnsVpnService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import java.text.DateFormat
 import java.util.Date
 
@@ -117,7 +122,6 @@ class MainActivity : ComponentActivity() {
     }
 
     fun refreshPermissionState() {
-        governance.refresh()
         _permissionRevision.value += 1
     }
 
@@ -136,11 +140,15 @@ class MainActivity : ComponentActivity() {
 
     internal fun permissionSnapshot(): PermissionSnapshot = PermissionSnapshot(
         vpnConsentGranted = VpnService.prepare(this) == null,
-        accessibilityEnabled = isSplashAccessibilityEnabled(),
+        accessibilityEnabled = SplashRuntime.permissionEnabled(this),
         notificationsEnabled = NotificationManagerCompat.from(this).areNotificationsEnabled()
     )
 
     fun openAccessibilitySettings() = openSettings(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+
+    fun openBackgroundSettings() = openSettings(
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+    )
 
     fun openNotificationSettings() = openSettings(
         Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
@@ -173,16 +181,6 @@ class MainActivity : ComponentActivity() {
         startActivity(resolved)
     }
 
-    private fun isSplashAccessibilityEnabled(): Boolean {
-        val manager = getSystemService(AccessibilityManager::class.java)
-        return manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-            .any { service ->
-                service.resolveInfo.serviceInfo.packageName == packageName &&
-                    service.resolveInfo.serviceInfo.name ==
-                    "app.jingqi.guard.accessibility.SplashSkipAccessibilityService"
-            }
-    }
-
     private companion object {
         const val FEEDBACK_URL = "https://github.com/cll123456/xiaomi-remove-ad/issues/new"
     }
@@ -198,29 +196,29 @@ private fun JingQiRoot() {
     val entitlement by Entitlements.state.collectAsState()
     val governanceState by activity.governance.state.collectAsState()
     val permissionRevision by activity.permissionRevision.collectAsState()
+    val splashRuntime by SplashRuntime.state.collectAsState()
+    LaunchedEffect(activity) {
+        activity.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                activity.refreshPermissionState()
+                delay(2_000L)
+            }
+        }
+    }
     var tab by remember { mutableIntStateOf(0) }
     var oneTapResult by remember { mutableStateOf<String?>(null) }
     val permissions = remember(permissionRevision, running) { activity.permissionSnapshot() }
+    val splashHealth = remember(permissionRevision, permissions, splashRuntime) {
+        splashRuntime.health(permissions.accessibilityEnabled, SystemClock.elapsedRealtime())
+    }
 
     fun runAuthorizedProtection() {
         activity.startGuard()
-        val expertStarted = if (entitlement.isExpert && governanceState.phase in setOf(
-                GovernanceState.Phase.READY,
-                GovernanceState.Phase.DONE,
-                GovernanceState.Phase.ERROR
-            )
-        ) {
-            activity.governance.apply()
-            true
-        } else {
-            false
-        }
         oneTapResult = buildString {
-            append("本地广告过滤已启动。")
-            if (!permissions.accessibilityEnabled) append("开屏守护还需在“权限”中由你手动开启。")
-            if (entitlement.isExpert) {
-                append(if (expertStarted) "专家系统治理正在执行。" else "专家权限尚未连接，可在“专家”页完成一次配对。")
-            }
+            append("已请求启动本地过滤，请以下方实际运行状态为准。")
+            if (splashHealth != SplashHealth.RUNNING) append("请点“恢复开屏守护”完成检查。")
+            else append("开屏守护正在运行，可以直接使用其他应用。")
+            append("日常保护不需要无线调试，也不需要停留在设置页。")
         }
     }
 
@@ -234,7 +232,7 @@ private fun JingQiRoot() {
 
     fun requestPairing() {
         tab = 1
-        oneTapResult = "已打开无线调试；生成六位码后返回净启专家页输入。"
+        oneTapResult = "请保持系统六位配对码窗口在前台，净启会在本次配对中自动提交；不要切换回来。"
         activity.governance.startPairing()
     }
 
@@ -283,17 +281,19 @@ private fun JingQiRoot() {
                         running = running,
                         entitlement = entitlement,
                         governanceState = governanceState,
-                        permissions = permissions,
+                        splashHealth = splashHealth,
                         oneTapResult = oneTapResult,
                         onOneTap = { requestProtection(true) },
                         onToggleVpn = ::requestProtection,
                         onOpenPermissions = { tab = 2 },
+                        onAccessibility = activity::openAccessibilitySettings,
                         onOpenExpert = { tab = 1 }
                     )
                     1 -> SystemGovernance(
                         entitlement = entitlement,
                         governance = activity.governance,
                         accessibilityEnabled = permissions.accessibilityEnabled,
+                        splashHealth = splashHealth,
                         onPairing = ::requestPairing,
                         onAccessibility = activity::openAccessibilitySettings
                     )
@@ -302,8 +302,10 @@ private fun JingQiRoot() {
                         entitlement = entitlement,
                         governanceState = governanceState,
                         permissions = permissions,
+                        splashHealth = splashHealth,
                         onToggleVpn = ::requestProtection,
                         onAccessibility = activity::openAccessibilitySettings,
+                        onBackground = activity::openBackgroundSettings,
                         onNotifications = {
                             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(
                                     activity,
@@ -331,19 +333,20 @@ private fun Dashboard(
     running: Boolean,
     entitlement: EntitlementState,
     governanceState: GovernanceState,
-    permissions: PermissionSnapshot,
+    splashHealth: SplashHealth,
     oneTapResult: String?,
     onOneTap: () -> Unit,
     onToggleVpn: (Boolean) -> Unit,
     onOpenPermissions: () -> Unit,
+    onAccessibility: () -> Unit,
     onOpenExpert: () -> Unit
 ) {
     val count by AppState.blockedCount.collectAsState()
     val hits by AppState.recentHits.collectAsState()
+    val splashRuntime by SplashRuntime.state.collectAsState()
     val readyCount = listOf(
         running,
-        permissions.accessibilityEnabled,
-        entitlement.isExpert && governanceState.phase in setOf(GovernanceState.Phase.READY, GovernanceState.Phase.DONE)
+        splashHealth == SplashHealth.RUNNING
     ).count { it }
 
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -354,12 +357,18 @@ private fun Dashboard(
             ) {
                 Column(Modifier.fillMaxWidth().padding(22.dp)) {
                     Text("一键净化", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text("启动本地过滤，并执行当前已经获得授权的保护能力。", color = Color.DarkGray)
+                    Text("日常保护无需无线调试，也不需要一直连接电脑或停在系统设置。", color = Color.DarkGray)
                     Spacer(Modifier.height(16.dp))
                     Button(onClick = onOneTap, modifier = Modifier.fillMaxWidth().height(52.dp)) {
                         Icon(Icons.Outlined.HealthAndSafety, null)
                         Spacer(Modifier.size(10.dp))
                         Text(if (running) "重新检查并净化" else "开始一键净化", fontWeight = FontWeight.Bold)
+                    }
+                    if (splashHealth != SplashHealth.RUNNING) {
+                        OutlinedButton(onClick = onAccessibility, modifier = Modifier.fillMaxWidth()) {
+                            Text("恢复开屏守护")
+                        }
+                        Text("Android 要求你亲自开启一次无障碍；已授权但未连接时，关闭再开启该服务。净启不能代替你确认。", style = MaterialTheme.typography.bodySmall)
                     }
                     oneTapResult?.let {
                         Spacer(Modifier.height(12.dp))
@@ -382,19 +391,19 @@ private fun Dashboard(
         item {
             StatusCard(
                 title = "开屏守护",
-                detail = if (permissions.accessibilityEnabled) "已由用户明确授权" else "需要在系统无障碍设置中开启",
-                ready = permissions.accessibilityEnabled,
-                actionLabel = if (permissions.accessibilityEnabled) null else "去开启",
-                onAction = onOpenPermissions
+                detail = splashHealth.description,
+                ready = splashHealth == SplashHealth.RUNNING,
+                actionLabel = if (splashHealth == SplashHealth.RUNNING) null else "恢复",
+                onAction = onAccessibility
             )
         }
         item {
             StatusCard(
-                title = "专家系统治理",
+                title = "可选：专家系统治理",
                 detail = when {
                     !entitlement.isExpert -> "免费版不执行系统级修改"
                     governanceState.phase in setOf(GovernanceState.Phase.READY, GovernanceState.Phase.DONE) -> "专家权限已连接"
-                    else -> "需要完成专家桥接"
+                    else -> "未连接不影响日常开屏守护；执行系统治理时再连接"
                 },
                 ready = entitlement.isExpert && governanceState.phase in setOf(
                     GovernanceState.Phase.READY,
@@ -407,18 +416,25 @@ private fun Dashboard(
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                 Column(Modifier.fillMaxWidth().padding(18.dp)) {
-                    Text("$readyCount / 3 项保护已就绪", fontWeight = FontWeight.Bold)
+                    Text("$readyCount / 2 项日常保护正在运行", fontWeight = FontWeight.Bold)
                     Text(
                         "所有权限均可撤销；净启不会静默开启无障碍、开发者模式或无线调试。",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
+                    TextButton(onClick = onOpenPermissions) { Text("后台运行与权限检查") }
                 }
             }
         }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                 Column(Modifier.fillMaxWidth().padding(20.dp)) {
+                    Text("开屏跳过操作：${splashRuntime.submittedActions} 次", fontWeight = FontWeight.Bold)
+                    if (splashRuntime.lastActionAt > 0L) {
+                        Text("最近：${BuiltInRuleCatalog.find(splashRuntime.lastActionPackage)?.displayName ?: "其他应用"} · ${DateFormat.getDateTimeInstance().format(Date(splashRuntime.lastActionAt))}")
+                    }
+                    Text("记录的是跳过操作已提交，不代表每次广告都已关闭；不处理首页信息流或视频贴片。", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(12.dp))
                     Text("累计拦截", color = Color.Gray)
                     Text(
                         "$count",
@@ -490,6 +506,7 @@ private fun SystemGovernance(
     entitlement: EntitlementState,
     governance: HyperOsGovernance,
     accessibilityEnabled: Boolean,
+    splashHealth: SplashHealth,
     onPairing: () -> Unit,
     onAccessibility: () -> Unit
 ) {
@@ -517,22 +534,18 @@ private fun SystemGovernance(
         item {
             Card(
                 colors = CardDefaults.cardColors(
-                    containerColor = if (accessibilityEnabled) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
+                    containerColor = if (splashHealth == SplashHealth.RUNNING) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
                 )
             ) {
                 Column(Modifier.fillMaxWidth().padding(18.dp)) {
                     Text("第三方应用开屏广告", fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        if (accessibilityEnabled) {
-                            "开屏守护已开启。酷狗、美团等文字跳过控件和携程专用视觉规则才会运行。"
-                        } else {
-                            "开屏守护当前关闭，因此酷狗、携程、美团的开屏跳过规则都不会运行。专家配对不能代替这项系统授权。"
-                        },
+                        "${splashHealth.description}。京东、酷狗、淘宝等开屏跳过不依赖专家连接；专家配对不能代替无障碍授权。",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.DarkGray
                     )
-                    if (!accessibilityEnabled) {
+                    if (splashHealth != SplashHealth.RUNNING) {
                         Spacer(Modifier.height(10.dp))
                         Button(onClick = onAccessibility, modifier = Modifier.fillMaxWidth()) {
                             Text("去系统设置开启开屏守护")
@@ -620,6 +633,9 @@ private fun SystemGovernance(
                     }
                     if (state.phase == GovernanceState.Phase.DISCONNECTED) {
                         Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = governance::refresh, modifier = Modifier.fillMaxWidth()) {
+                            Text("检查已有配对连接")
+                        }
                         TextButton(onClick = onPairing, modifier = Modifier.fillMaxWidth()) {
                             Text("系统忘记了净启？重新配对")
                         }
@@ -668,8 +684,10 @@ private fun PermissionCenter(
     entitlement: EntitlementState,
     governanceState: GovernanceState,
     permissions: PermissionSnapshot,
+    splashHealth: SplashHealth,
     onToggleVpn: (Boolean) -> Unit,
     onAccessibility: () -> Unit,
+    onBackground: () -> Unit,
     onNotifications: () -> Unit,
     onPairing: () -> Unit,
     onOpenExpert: () -> Unit
@@ -698,11 +716,22 @@ private fun PermissionCenter(
             PermissionCard(
                 icon = Icons.Outlined.HealthAndSafety,
                 title = "开屏守护（无障碍）",
-                status = if (permissions.accessibilityEnabled) "已由用户开启" else "未开启",
+                status = splashHealth.description,
                 explanation = "仅在应用启动窗口识别明确跳过控件；你主动发起专家配对时，还会在系统设置配对窗口一次性读取六位码。金融应用严格限制或完全排除。",
-                ready = permissions.accessibilityEnabled,
+                ready = splashHealth == SplashHealth.RUNNING,
                 action = "打开系统设置",
                 onAction = onAccessibility
+            )
+        }
+        item {
+            PermissionCard(
+                icon = Icons.Outlined.Settings,
+                title = "后台运行（首次检查）",
+                status = "系统后台策略不能由净启完整检测，请自行确认",
+                explanation = "在净启的应用信息中允许自启动，将省电策略设为无限制（不同澎湃版本入口可能不同）；可在最近任务中锁定净启。完成后退出设置正常使用即可。强行停止、撤销权限或系统回收后仍可能需要手动恢复。",
+                ready = false,
+                action = "应用信息",
+                onAction = onBackground
             )
         }
         item {
@@ -723,7 +752,7 @@ private fun PermissionCenter(
                 status = when {
                     !entitlement.isExpert -> "免费版不需要"
                     governanceState.phase in setOf(GovernanceState.Phase.READY, GovernanceState.Phase.DONE) -> "已连接"
-                    else -> "尚未连接"
+                    else -> "可选，日常守护不需要连接"
                 },
                 explanation = "用于固定的系统广告治理；不允许规则、服务器或界面输入任意命令。",
                 ready = !entitlement.isExpert || governanceState.phase in setOf(

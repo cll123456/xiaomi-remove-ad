@@ -9,6 +9,16 @@ import org.junit.Test
 
 class BuiltInRuleCatalogTest {
     @Test
+    fun shoppingAndMusicUseTextRulesWithoutBlindCoordinates() {
+        listOf("com.jingdong.app.mall", "com.kugou.android", "com.taobao.taobao").forEach {
+            val rule = BuiltInRuleCatalog.find(it)
+            assertEquals(NodePolicy.GENERAL, rule?.nodePolicy)
+            assertNull(rule?.visualSplash)
+            assertTrue(rule?.verifiedSkipViewIds.isNullOrEmpty())
+        }
+    }
+
+    @Test
     fun sensitivePaymentAppsAreBlocked() {
         val alipay = BuiltInRuleCatalog.find("com.eg.android.AlipayGphone")
         assertEquals(NodePolicy.BLOCKED, alipay?.nodePolicy)
